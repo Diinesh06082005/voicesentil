@@ -44,6 +44,10 @@ class ShadowPilotHub:
             }
         return self.sessions[session_id]
 
+    def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves session dict or None."""
+        return self.sessions.get(session_id)
+
     def inject_whisper(self, session_id: str, whisper_text: str) -> Dict[str, Any]:
         """
         Silently injects supervisor guidance for the next agent turn.
