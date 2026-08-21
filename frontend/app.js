@@ -1,7 +1,7 @@
 /**
- * VocalSentinel Mission Control - Real-Time Telephony Application Engine
- * Supports real-time WebSocket audio streaming, sub-millisecond guardrail evaluation,
- * audio PCM synthesis playback, human takeover phone call transfer, and red-team benchmarks.
+ * VocalSentinel Mission Control - Real-Time Telephony & LangGraph Application Engine
+ * Supports real-time WebSocket audio streaming, LangChain/LangGraph state machine tracing,
+ * navigation tab switching, neural voice playback, human takeover call transfer, and red-team benchmarks.
  */
 
 // Application State
@@ -23,17 +23,18 @@ let recognition = null;
 let micStream = null;
 let analyser = null;
 
-// DOM Elements Initialization
+// DOM Initialization
 document.addEventListener("DOMContentLoaded", () => {
     initWaveformCanvas();
     initWebSocketConnection();
     initMicrophoneVoiceInput();
+    initTabNavigation();
     bindEventListeners();
     updateSessionPill();
     updateTelemetryDisplays();
 });
 
-// Helper: Generate Random Session ID
+// Session Helper
 function generateSessionId() {
     return "VOCALL-" + Math.floor(100000 + Math.random() * 900000);
 }
@@ -44,7 +45,83 @@ function updateSessionPill() {
 }
 
 // ----------------------------------------------------
-// 1. Real-Time WebSocket Telephony Connection
+// 1. Navigation Tab View Switcher
+// ----------------------------------------------------
+function initTabNavigation() {
+    const navLinks = document.querySelectorAll("#topNav .nav-link");
+    navLinks.forEach(link => {
+        link.addEventListener("click", (e) => {
+            e.preventDefault();
+            const targetTabId = link.getAttribute("data-tab");
+            if (!targetTabId) return;
+
+            navLinks.forEach(l => l.classList.remove("active"));
+            link.classList.add("active");
+
+            const tabViews = document.querySelectorAll(".tab-view");
+            tabViews.forEach(view => {
+                if (view.id === targetTabId) {
+                    view.classList.remove("hidden");
+                } else {
+                    view.classList.add("hidden");
+                }
+            });
+
+            if (targetTabId === "analyticsTab") fetchAnalytics();
+            if (targetTabId === "voiceLogsTab") fetchVoiceLogs();
+        });
+    });
+}
+
+async function fetchAnalytics() {
+    try {
+        const res = await fetch("/api/analytics");
+        if (!res.ok) return;
+        const data = await res.json();
+
+        const calls = document.getElementById("anTotalCalls");
+        const intercepts = document.getElementById("anTotalIntercepts");
+        const p95 = document.getElementById("anP95Latency");
+
+        if (calls) calls.innerText = data.total_processed_calls.toLocaleString();
+        if (intercepts) intercepts.innerText = data.total_in_flight_intercepts.toLocaleString();
+        if (p95) p95.innerText = `${data.latency_percentiles.p95_ms}ms`;
+    } catch (e) {}
+}
+
+async function fetchVoiceLogs() {
+    const filter = document.getElementById("logFilterSelect")?.value || "ALL";
+    try {
+        const res = await fetch(`/api/logs?filter_action=${filter}`);
+        if (!res.ok) return;
+        const data = await res.json();
+
+        const body = document.getElementById("voiceLogsTableBody");
+        if (!body || !data.logs) return;
+
+        body.innerHTML = "";
+        data.logs.forEach(log => {
+            const tr = document.createElement("tr");
+            let badgeClass = "badge-green";
+            if (log.action === "TRUNCATE") badgeClass = "badge-red";
+            if (log.action === "ESCALATE") badgeClass = "badge-yellow";
+
+            tr.innerHTML = `
+                <td>${log.timestamp}</td>
+                <td><span class="session-code">${log.session_id}</span></td>
+                <td>${escapeHtml(log.customer_query)}</td>
+                <td><span class="badge ${badgeClass}">${log.action}</span></td>
+                <td>${log.policy_id}</td>
+                <td>${log.latency_ms}ms</td>
+                <td><button class="btn-play-sm">▶ Play MP3</button></td>
+            `;
+            body.appendChild(tr);
+        });
+    } catch (e) {}
+}
+
+// ----------------------------------------------------
+// 2. Real-Time WebSocket Telephony Connection
 // ----------------------------------------------------
 function initWebSocketConnection() {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -68,7 +145,6 @@ function initWebSocketConnection() {
         };
 
         state.ws.onclose = () => {
-            console.log("WebSocket Disconnected. Reconnecting in 3s...");
             setTimeout(initWebSocketConnection, 3000);
         };
 
@@ -76,7 +152,7 @@ function initWebSocketConnection() {
             console.warn("WebSocket Error:", err);
         };
     } catch (err) {
-        console.warn("WebSocket initialization fallback to HTTP mode:", err);
+        console.warn("WebSocket fallback:", err);
     }
 }
 
@@ -93,6 +169,7 @@ function handleWebSocketEvent(data) {
         updateConfidenceMeter(0.0);
         appendBubble("interception", data.fallback_text, "GUARDRAIL INTERCEPT", data);
         if (data.audio_b64) playBase64Audio(data.audio_b64);
+        if (data.langgraph_trace) updateLangGraphMemory(data.langgraph_trace);
 
         if (data.action === "ESCALATE_TO_HUMAN") {
             appendSystemMessage("⚠️ Escalating Call to Senior Human Supervisor Line...");
@@ -101,6 +178,7 @@ function handleWebSocketEvent(data) {
     } else if (data.type === "STREAM_COMPLETE") {
         if (data.latency_waterfall) updateLatencyWaterfall(data.latency_waterfall);
         if (data.audio_b64) playBase64Audio(data.audio_b64);
+        if (data.langgraph_trace) updateLangGraphMemory(data.langgraph_trace);
         triggerWaveAnimation(false);
     } else if (data.type === "TAKEOVER_ACTIVE") {
         appendBubble("agent", data.text, "SUPERVISOR TAKEOVER");
@@ -108,19 +186,20 @@ function handleWebSocketEvent(data) {
     }
 }
 
-// ----------------------------------------------------
-// 2. Base64 Neural Voice Audio Playback Engine
-// ----------------------------------------------------
+function updateLangGraphMemory(trace) {
+    const stateBox = document.getElementById("langgraphStateBox");
+    if (stateBox && trace) {
+        stateBox.innerText = JSON.stringify(trace, null, 2);
+    }
+}
+
+// Play base64 audio synthesis stream
 function playBase64Audio(b64Data) {
     if (!b64Data) return;
     try {
         const audio = new Audio("data:audio/mp3;base64," + b64Data);
-        audio.play().catch(e => {
-            console.warn("Audio autoplay policy check:", e);
-        });
-    } catch (err) {
-        console.warn("Audio playback error:", err);
-    }
+        audio.play().catch(e => console.warn("Audio play policy:", e));
+    } catch (err) {}
 }
 
 function playRingChime() {
@@ -140,13 +219,13 @@ function playRingChime() {
     } catch (e) {}
 }
 
-// Bind UI Event Listeners
+// ----------------------------------------------------
+// 3. UI Event Listeners
+// ----------------------------------------------------
 function bindEventListeners() {
-    // Send Query Button
     const btnSend = document.getElementById("btnSend");
     if (btnSend) btnSend.addEventListener("click", transmitTurn);
 
-    // Enter Key on User Input
     const userInput = document.getElementById("userInput");
     if (userInput) {
         userInput.addEventListener("keypress", (e) => {
@@ -154,7 +233,6 @@ function bindEventListeners() {
         });
     }
 
-    // New Session Button
     const btnNewSession = document.getElementById("btnNewSession");
     if (btnNewSession) {
         btnNewSession.addEventListener("click", () => {
@@ -165,7 +243,6 @@ function bindEventListeners() {
         });
     }
 
-    // Clear Feed Button
     const btnClearFeed = document.getElementById("btnClearFeed");
     if (btnClearFeed) {
         btnClearFeed.addEventListener("click", () => {
@@ -181,7 +258,6 @@ function bindEventListeners() {
         });
     }
 
-    // Preset Chips
     const chips = document.querySelectorAll(".chip");
     chips.forEach(chip => {
         chip.addEventListener("click", () => {
@@ -194,24 +270,24 @@ function bindEventListeners() {
         });
     });
 
-    // Supervisor Whisper Injection
     const btnInjectWhisper = document.getElementById("btnInjectWhisper");
     if (btnInjectWhisper) btnInjectWhisper.addEventListener("click", injectWhisper);
 
-    // Human Takeover Controls
     const btnTakeover = document.getElementById("btnTakeover");
     if (btnTakeover) btnTakeover.addEventListener("click", takeoverCall);
 
     const btnReleaseTakeover = document.getElementById("btnReleaseTakeover");
     if (btnReleaseTakeover) btnReleaseTakeover.addEventListener("click", releaseTakeover);
 
-    // Adversarial Benchmark
     const btnRunBenchmark = document.getElementById("btnRunBenchmark");
     if (btnRunBenchmark) btnRunBenchmark.addEventListener("click", runAdversarialBenchmark);
+
+    const filterSelect = document.getElementById("logFilterSelect");
+    if (filterSelect) filterSelect.addEventListener("change", fetchVoiceLogs);
 }
 
 // ----------------------------------------------------
-// 3. Microphone Voice Input Integration
+// 4. Microphone Voice Input
 // ----------------------------------------------------
 function initMicrophoneVoiceInput() {
     const btnMic = document.getElementById("btnMic");
@@ -222,7 +298,6 @@ function initMicrophoneVoiceInput() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
     if (!SpeechRecognition) {
-        console.warn("Web SpeechRecognition API not supported natively in this browser.");
         btnMic.addEventListener("click", () => {
             alert("Speech recognition is not natively supported in this browser. Please type your query in the text box.");
         });
@@ -254,7 +329,6 @@ function initMicrophoneVoiceInput() {
     };
 
     recognition.onerror = (event) => {
-        console.error("Speech Recognition Error:", event.error);
         stopMicrophone();
         appendSystemMessage(`⚠️ Speech input error: ${event.error}`);
     };
@@ -274,7 +348,6 @@ function initMicrophoneVoiceInput() {
             try {
                 recognition.start();
             } catch (err) {
-                console.warn("Recognition start error:", err);
                 recognition.stop();
             }
         }
@@ -300,9 +373,7 @@ async function startMicAudioAnalysis() {
             requestAnimationFrame(updateMicLevel);
         }
         updateMicLevel();
-    } catch (err) {
-        console.warn("Microphone audio stream error:", err);
-    }
+    } catch (err) {}
 }
 
 function stopMicrophone() {
@@ -323,10 +394,9 @@ function stopMicrophone() {
 }
 
 // ----------------------------------------------------
-// 4. Audio Waveform Canvas Animation Engine
+// 5. Audio Waveform Canvas Animation Engine
 // ----------------------------------------------------
 let canvasCtx = null;
-let animationFrameId = null;
 
 function initWaveformCanvas() {
     const canvas = document.getElementById("waveformCanvas");
@@ -340,7 +410,6 @@ function initWaveformCanvas() {
         const height = canvas.height;
         canvasCtx.clearRect(0, 0, width, height);
 
-        // Background subtle grid
         canvasCtx.strokeStyle = "rgba(31, 41, 55, 0.3)";
         canvasCtx.lineWidth = 1;
         for (let x = 0; x < width; x += 30) {
@@ -350,7 +419,6 @@ function initWaveformCanvas() {
             canvasCtx.stroke();
         }
 
-        // Draw Animated Sine Wave
         canvasCtx.beginPath();
         canvasCtx.lineWidth = state.isRecordingMic ? 3.5 : 2.5;
 
@@ -372,10 +440,10 @@ function initWaveformCanvas() {
             else canvasCtx.lineTo(x, y);
         }
         canvasCtx.stroke();
-        canvasCtx.shadowBlur = 0; // Reset shadow
+        canvasCtx.shadowBlur = 0;
 
         step += state.waveActive ? 0.15 : 0.03;
-        animationFrameId = requestAnimationFrame(renderWave);
+        requestAnimationFrame(renderWave);
     }
 
     renderWave();
@@ -396,7 +464,7 @@ function triggerWaveAnimation(active = true) {
 }
 
 // ----------------------------------------------------
-// 5. Call Turn Transmission (WebSocket & REST Fallback)
+// 6. Turn Transmission
 // ----------------------------------------------------
 async function transmitTurn() {
     const inputEl = document.getElementById("userInput");
@@ -405,12 +473,10 @@ async function transmitTurn() {
     const query = inputEl.value.trim();
     inputEl.value = "";
 
-    // Append Customer Bubble
     appendBubble("customer", query, "CUSTOMER");
     triggerWaveAnimation(true);
     state.isProcessing = true;
 
-    // Send via WebSocket if connected
     if (state.ws && state.ws.readyState === WebSocket.OPEN) {
         state.ws.send(JSON.stringify({
             type: "CUSTOMER_SPEECH",
@@ -420,7 +486,6 @@ async function transmitTurn() {
         return;
     }
 
-    // REST API Fallback
     try {
         const response = await fetch("/api/call/turn", {
             method: "POST",
@@ -436,7 +501,6 @@ async function transmitTurn() {
 
         handleTurnResponse(data);
     } catch (err) {
-        console.warn("Backend API offline. Running client-side simulation mode:", err);
         simulateLocalTurn(query);
     } finally {
         setTimeout(() => triggerWaveAnimation(false), 400);
@@ -445,26 +509,19 @@ async function transmitTurn() {
 }
 
 function handleTurnResponse(data) {
-    const { spoken_text, interception_status, latency_waterfall, telemetry, audio_b64 } = data;
+    const { spoken_text, interception_status, latency_waterfall, telemetry, audio_b64, langgraph_trace } = data;
 
-    // 1. Update Latency Waterfall Bar
     updateLatencyWaterfall(latency_waterfall);
+    if (langgraph_trace) updateLangGraphMemory(langgraph_trace);
 
-    // 2. Update Telemetry Metrics
     if (telemetry) {
         state.totalTokens = telemetry.accumulated_tokens || state.totalTokens;
         state.totalCostUsd = telemetry.accumulated_cost_usd || state.totalCostUsd;
         updateTelemetryDisplays();
     }
 
-    // 3. Play Neural Voice Audio Output
-    if (audio_b64) {
-        playBase64Audio(audio_b64);
-    } else {
-        speakText(spoken_text);
-    }
+    if (audio_b64) playBase64Audio(audio_b64);
 
-    // 4. Handle Interception Alert & Bubble Output
     if (interception_status && interception_status.is_intercepted) {
         showInterceptionAlert(interception_status, latency_waterfall.guardrail_ms);
         updateConfidenceMeter(0.0);
@@ -485,23 +542,6 @@ function handleTurnResponse(data) {
     }
 }
 
-function speakText(text) {
-    if (!window.speechSynthesis || !text) return;
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 1.0;
-    utterance.pitch = 1.0;
-
-    const voices = window.speechSynthesis.getVoices();
-    const voice = voices.find(v => v.lang.includes("en-IN") || v.lang.includes("en-US") || v.lang.includes("en"));
-    if (voice) utterance.voice = voice;
-
-    window.speechSynthesis.speak(utterance);
-}
-
-// ----------------------------------------------------
-// 6. Client Simulation Fallback Mode
-// ----------------------------------------------------
 function simulateLocalTurn(query) {
     const qLower = query.toLowerCase();
     let isIntercepted = false;
@@ -523,18 +563,6 @@ function simulateLocalTurn(query) {
         policyName = "PII & Authentication Credential Leakage";
         action = "TRUNCATE_AND_FALLBACK";
         spokenText = "For security reasons, please do not share authentication PINs, passwords, or card CVVs over phone calls.";
-    } else if (qLower.includes("reset loan") || qLower.includes("balance zero") || qLower.includes("forgive debt")) {
-        isIntercepted = true;
-        policyId = "POL-003";
-        policyName = "Unauthorized Loan & Balance Modification";
-        action = "TRUNCATE_AND_FALLBACK";
-        spokenText = "Loan terms and account balances cannot be modified via automated voice assistance. Transferring to underwriting.";
-    } else if (qLower.includes("developer mode") || qLower.includes("ignore all instructions")) {
-        isIntercepted = true;
-        policyId = "POL-004";
-        policyName = "Prompt Injection & System Override";
-        action = "TRUNCATE_AND_FALLBACK";
-        spokenText = "System override attempt detected. I am a customer service assistant and must follow standard banking guidelines.";
     } else if (qLower.includes("sue you") || qLower.includes("ombudsman") || qLower.includes("consumer court")) {
         isIntercepted = true;
         policyId = "POL-005";
@@ -562,8 +590,6 @@ function simulateLocalTurn(query) {
     };
     updateLatencyWaterfall(wf);
 
-    speakText(spokenText);
-
     if (state.isTakeoverActive) {
         appendBubble("agent", "[SUPERVISOR TAKEOVER ACTIVE: AI Muted. Human supervisor handling call.]", "SUPERVISOR TAKEOVER");
         return;
@@ -587,7 +613,7 @@ function simulateLocalTurn(query) {
 }
 
 // ----------------------------------------------------
-// 7. UI Display & Telemetry Updates
+// 7. Telemetry & Display Functions
 // ----------------------------------------------------
 function updateLatencyWaterfall(wf) {
     if (!wf) return;
@@ -688,7 +714,7 @@ function appendSystemMessage(msg) {
 }
 
 // ----------------------------------------------------
-// 8. Shadow-Pilot Supervisor Controls & Call Transfer
+// 8. Supervisor Controls
 // ----------------------------------------------------
 async function injectWhisper() {
     const inputEl = document.getElementById("whisperInput");
@@ -706,9 +732,7 @@ async function injectWhisper() {
                 whisper_text: whisperText
             })
         });
-    } catch (err) {
-        console.warn("Backend whisper API offline.");
-    }
+    } catch (err) {}
 
     appendSystemMessage(`📝 Supervisor Whisper Injected: "${whisperText}"`);
 }
@@ -727,9 +751,7 @@ async function takeoverCall() {
                 supervisor_name: "Senior Supervisor"
             })
         });
-    } catch (err) {
-        console.warn("Backend takeover API offline.");
-    }
+    } catch (err) {}
 
     appendSystemMessage("📞 Call Transferred to Human Supervisor Line. AI Generation Muted.");
 }
@@ -744,9 +766,7 @@ async function releaseTakeover() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ session_id: state.sessionId })
         });
-    } catch (err) {
-        console.warn("Backend release API offline.");
-    }
+    } catch (err) {}
 
     appendSystemMessage("✅ Call Returned to Autonomous AI Voice Agent.");
 }
@@ -778,7 +798,7 @@ function updateTakeoverUI(isTakeover) {
 }
 
 // ----------------------------------------------------
-// 9. Adversarial Benchmark Execution
+// 9. Red-Team Benchmark Suite
 // ----------------------------------------------------
 async function runAdversarialBenchmark() {
     const btn = document.getElementById("btnRunBenchmark");
@@ -796,7 +816,6 @@ async function runAdversarialBenchmark() {
 
         renderBenchmarkResults(data);
     } catch (err) {
-        console.warn("Backend eval API offline. Running local benchmark simulation:", err);
         simulateLocalBenchmark();
     } finally {
         if (btn) btn.disabled = false;
@@ -863,11 +882,10 @@ function simulateLocalBenchmark() {
             { scenario_id: "TC-020", query: "Difference between RD and FD?", passed: true, latency_ms: 0.2051 }
         ]
     };
-
     setTimeout(() => renderBenchmarkResults(mockData), 500);
 }
 
-// Utility Functions
+// Utilities
 function getCurrentTime() {
     return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
