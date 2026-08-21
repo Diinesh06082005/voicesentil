@@ -1,7 +1,7 @@
 /**
  * VocalSentinel Mission Control - Frontend Dashboard Application Engine
- * Handles real-time telephony streaming, audio waveform animation,
- * shadow-pilot supervisor controls, latency waterfall, and benchmark metrics.
+ * Handles real-time telephony streaming, audio waveform animation, microphone voice input,
+ * TTS speech synthesis, shadow-pilot supervisor controls, latency waterfall, and benchmark metrics.
  */
 
 // Application State
@@ -12,12 +12,20 @@ const state = {
     isTakeoverActive: false,
     confidenceScore: 99.0,
     isProcessing: false,
-    waveActive: false
+    waveActive: false,
+    isRecordingMic: false,
+    micLevel: 0
 };
+
+let recognition = null;
+let audioCtx = null;
+let micStream = null;
+let analyser = null;
 
 // DOM Elements Initialization
 document.addEventListener("DOMContentLoaded", () => {
     initWaveformCanvas();
+    initMicrophoneVoiceInput();
     bindEventListeners();
     updateSessionPill();
     updateTelemetryDisplays();
@@ -103,7 +111,123 @@ function bindEventListeners() {
 }
 
 // ----------------------------------------------------
-// 1. Audio Waveform HTML5 Canvas Animation Engine
+// 1. Microphone Voice Input & Web Speech API Integration
+// ----------------------------------------------------
+function initMicrophoneVoiceInput() {
+    const btnMic = document.getElementById("btnMic");
+    const micIcon = document.getElementById("micIcon");
+    const micText = document.getElementById("micText");
+    if (!btnMic) return;
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+        console.warn("Web SpeechRecognition API not supported natively in this browser.");
+        btnMic.addEventListener("click", () => {
+            alert("Speech recognition is not natively supported in this browser. Please type your query in the text box.");
+        });
+        return;
+    }
+
+    recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = "en-IN"; // English (India) default
+
+    recognition.onstart = async () => {
+        state.isRecordingMic = true;
+        btnMic.classList.add("recording");
+        if (micIcon) micIcon.innerText = "🔴";
+        if (micText) micText.innerText = "Listening...";
+        triggerWaveAnimation(true);
+        startMicAudioAnalysis();
+        appendSystemMessage("🎙️ Listening to live microphone voice input...");
+    };
+
+    recognition.onresult = (event) => {
+        let transcript = "";
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+            transcript += event.results[i][0].transcript;
+        }
+        const inputEl = document.getElementById("userInput");
+        if (inputEl) inputEl.value = transcript;
+    };
+
+    recognition.onerror = (event) => {
+        console.error("Speech Recognition Error:", event.error);
+        stopMicrophone();
+        appendSystemMessage(`⚠️ Speech input error: ${event.error}`);
+    };
+
+    recognition.onend = () => {
+        stopMicrophone();
+        const inputEl = document.getElementById("userInput");
+        if (inputEl && inputEl.value.trim()) {
+            transmitTurn();
+        }
+    };
+
+    btnMic.addEventListener("click", () => {
+        if (state.isRecordingMic) {
+            recognition.stop();
+        } else {
+            try {
+                recognition.start();
+            } catch (err) {
+                console.warn("Recognition start error:", err);
+                recognition.stop();
+            }
+        }
+    });
+}
+
+async function startMicAudioAnalysis() {
+    try {
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 256;
+        const source = audioCtx.createMediaStreamSource(micStream);
+        source.connect(analyser);
+
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        function updateMicLevel() {
+            if (!state.isRecordingMic || !analyser) return;
+            analyser.getByteFrequencyData(dataArray);
+            let sum = 0;
+            for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+            state.micLevel = sum / dataArray.length;
+            requestAnimationFrame(updateMicLevel);
+        }
+        updateMicLevel();
+    } catch (err) {
+        console.warn("Microphone audio stream error:", err);
+    }
+}
+
+function stopMicrophone() {
+    state.isRecordingMic = false;
+    state.micLevel = 0;
+    const btnMic = document.getElementById("btnMic");
+    const micIcon = document.getElementById("micIcon");
+    const micText = document.getElementById("micText");
+    if (btnMic) btnMic.classList.remove("recording");
+    if (micIcon) micIcon.innerText = "🎙️";
+    if (micText) micText.innerText = "Speak";
+
+    if (micStream) {
+        micStream.getTracks().forEach(track => track.stop());
+        micStream = null;
+    }
+    if (audioCtx) {
+        audioCtx.close();
+        audioCtx = null;
+    }
+    triggerWaveAnimation(false);
+}
+
+// ----------------------------------------------------
+// 2. Audio Waveform HTML5 Canvas Animation Engine
 // ----------------------------------------------------
 let canvasCtx = null;
 let animationFrameId = null;
@@ -130,17 +254,21 @@ function initWaveformCanvas() {
             canvasCtx.stroke();
         }
 
-        // Draw Animated Cyan Sine Wave
+        // Draw Animated Cyan / Red Sine Wave
         canvasCtx.beginPath();
-        canvasCtx.lineWidth = 2.5;
+        canvasCtx.lineWidth = state.isRecordingMic ? 3.5 : 2.5;
 
-        const amplitude = state.waveActive ? 22 : 6;
+        let amplitude = state.waveActive ? 22 : 6;
+        if (state.isRecordingMic && state.micLevel > 0) {
+            amplitude = Math.max(12, Math.min(38, state.micLevel * 0.7));
+        }
+
         const frequency = state.waveActive ? 0.04 : 0.015;
-        const strokeStyle = state.waveActive ? "#06b6d4" : "rgba(6, 182, 212, 0.4)";
+        const strokeStyle = state.isRecordingMic ? "#ef4444" : (state.waveActive ? "#06b6d4" : "rgba(6, 182, 212, 0.4)");
 
         canvasCtx.strokeStyle = strokeStyle;
-        canvasCtx.shadowBlur = state.waveActive ? 12 : 0;
-        canvasCtx.shadowColor = "#06b6d4";
+        canvasCtx.shadowBlur = state.waveActive || state.isRecordingMic ? 14 : 0;
+        canvasCtx.shadowColor = state.isRecordingMic ? "#ef4444" : "#06b6d4";
 
         for (let x = 0; x < width; x++) {
             const y = height / 2 + Math.sin(x * frequency + step) * amplitude * Math.sin(x * 0.005);
@@ -161,12 +289,16 @@ function triggerWaveAnimation(active = true) {
     state.waveActive = active;
     const statusEl = document.getElementById("waveStatusText");
     if (statusEl) {
-        statusEl.innerText = active ? "⚡ Streaming Audio Synthesis Active..." : "Awaiting Customer Voice Input...";
+        if (state.isRecordingMic) {
+            statusEl.innerText = "🎙️ Live Microphone Input Active (Listening...)";
+        } else {
+            statusEl.innerText = active ? "⚡ Streaming Audio Synthesis Active..." : "Awaiting Customer Voice Input...";
+        }
     }
 }
 
 // ----------------------------------------------------
-// 2. Call Turn Transmission & Guardrail Inspection
+// 3. Call Turn Transmission & Guardrail Inspection
 // ----------------------------------------------------
 async function transmitTurn() {
     const inputEl = document.getElementById("userInput");
@@ -216,9 +348,11 @@ function handleTurnResponse(data) {
         updateTelemetryDisplays();
     }
 
-    // 3. Handle Interception Alert & Bubble Output
+    // 3. Speak response aloud using Web SpeechSynthesis
+    speakText(spoken_text);
+
+    // 4. Handle Interception Alert & Bubble Output
     if (interception_status && interception_status.is_intercepted) {
-        // Interception Event
         showInterceptionAlert(interception_status, latency_waterfall.guardrail_ms);
         updateConfidenceMeter(0.0);
         appendBubble("interception", spoken_text, "GUARDRAIL INTERCEPT", interception_status);
@@ -227,15 +361,29 @@ function handleTurnResponse(data) {
         updateConfidenceMeter(99.0);
         appendBubble("agent", spoken_text, "SUPERVISOR TAKEOVER");
     } else {
-        // Safe Turn
         hideInterceptionAlert();
         updateConfidenceMeter(99.0);
         appendBubble("agent", spoken_text, "AI AGENT");
     }
 }
 
+function speakText(text) {
+    if (!window.speechSynthesis || !text) return;
+    window.speechSynthesis.cancel(); // Stop prior speech
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 1.0;
+    utterance.pitch = 1.0;
+
+    // Try selecting an English voice
+    const voices = window.speechSynthesis.getVoices();
+    const voice = voices.find(v => v.lang.includes("en-IN") || v.lang.includes("en-US") || v.lang.includes("en"));
+    if (voice) utterance.voice = voice;
+
+    window.speechSynthesis.speak(utterance);
+}
+
 // ----------------------------------------------------
-// 3. Client Simulation Fallback Mode
+// 4. Client Simulation Fallback Mode
 // ----------------------------------------------------
 function simulateLocalTurn(query) {
     const qLower = query.toLowerCase();
@@ -297,6 +445,8 @@ function simulateLocalTurn(query) {
     };
     updateLatencyWaterfall(wf);
 
+    speakText(spokenText);
+
     if (state.isTakeoverActive) {
         appendBubble("agent", "[SUPERVISOR TAKEOVER ACTIVE: AI Muted. Human supervisor handling call.]", "SUPERVISOR TAKEOVER");
         return;
@@ -315,7 +465,7 @@ function simulateLocalTurn(query) {
 }
 
 // ----------------------------------------------------
-// 4. UI Display & Telemetry Updates
+// 5. UI Display & Telemetry Updates
 // ----------------------------------------------------
 function updateLatencyWaterfall(wf) {
     if (!wf) return;
@@ -405,7 +555,7 @@ function appendSystemMessage(msg) {
 }
 
 // ----------------------------------------------------
-// 5. Shadow-Pilot Supervisor Controls
+// 6. Shadow-Pilot Supervisor Controls
 // ----------------------------------------------------
 async function injectWhisper() {
     const inputEl = document.getElementById("whisperInput");
@@ -494,7 +644,7 @@ function updateTakeoverUI(isTakeover) {
 }
 
 // ----------------------------------------------------
-// 6. Adversarial Benchmark Execution
+// 7. Adversarial Benchmark Execution
 // ----------------------------------------------------
 async function runAdversarialBenchmark() {
     const btn = document.getElementById("btnRunBenchmark");
