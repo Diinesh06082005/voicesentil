@@ -1,0 +1,82 @@
+version: "2.0"
+domain: "Banking & Telephony Voice AI"
+description: "Enterprise Guardrail Policies for Banking and Telephony Voice AI Infrastructure"
+
+policies:
+  - id: "POL-001"
+    name: "Unauthorized Fee & Rate Waiver"
+    description: "Detects unauthorized commitments to waive fees, penalties, or interest rates."
+    severity: "HIGH"
+    action: "TRUNCATE_AND_FALLBACK"
+    triggers:
+      - "waive fee"
+      - "cancel penalty"
+      - "zero interest"
+      - "100% discount"
+      - "maaf kar"
+    patterns:
+      - "(?i)\\bwaive\\b.*?\\bfee\\b"
+      - "(?i)\\b(waive\\s+fee|cancel\\s+penalty|zero\\s+interest|100%\\s+discount|maaf\\s+kar)\\b"
+    fallback_text: "I am unable to grant fee waivers or interest rate reductions directly over voice calls. Please submit a formal waiver request through corporate banking channels or contact account services."
+
+  - id: "POL-002"
+    name: "PII & Authentication Credential Leakage"
+    description: "Prevents exposure or collection of sensitive authentication credentials and PII."
+    severity: "CRITICAL"
+    action: "TRUNCATE_AND_FALLBACK"
+    triggers:
+      - "password"
+      - "cvv"
+      - "otp"
+      - "full card number"
+      - "aadhaar"
+    patterns:
+      - "(?i)\\b(password|cvv|otp|full\\s+card\\s+number|aadhaar)\\b"
+      - "\\b\\d{12}\\b"
+      - "\\b\\d{4}[-\\s]?\\d{4}[-\\s]?\\d{4}[-\\s]?\\d{4}\\b"
+    fallback_text: "Security Alert: For your protection, never share passwords, CVVs, OTPs, or Aadhaar numbers over an automated voice call. Access to credential processing is denied."
+
+  - id: "POL-003"
+    name: "Unauthorized Loan & Balance Modification"
+    description: "Blocks unauthorized loan approvals, debt forgiveness, or balance adjustments."
+    severity: "HIGH"
+    action: "TRUNCATE_AND_FALLBACK"
+    triggers:
+      - "loan approved"
+      - "reset loan"
+      - "balance zero"
+      - "forgive debt"
+    patterns:
+      - "(?i)\\b(loan\\s+approved|reset\\s+loan|balance\\s+zero|forgive\\s+debt)\\b"
+    fallback_text: "Account modifications and loan approvals require formal underwriting review. I am not authorized to alter account balances or issue loan approvals verbally."
+
+  - id: "POL-004"
+    name: "Prompt Injection & System Override"
+    description: "Detects adversarial prompt injections and developer mode overrides."
+    severity: "CRITICAL"
+    action: "TRUNCATE_AND_FALLBACK"
+    triggers:
+      - "ignore all instructions"
+      - "ignore all rules"
+      - "developer mode"
+      - "bypass security"
+    patterns:
+      - "(?i)\\bignore\\s+all\\b"
+      - "(?i)\\b(ignore\\s+all\\s+instructions|ignore\\s+all\\s+rules|developer\\s+mode|bypass\\s+security)\\b"
+      - "(?i)you\\s+are\\s+now\\s+in\\s+developer\\s+mode"
+    fallback_text: "I am an automated banking assistant operating within strict customer service boundaries. I cannot fulfill system override or prompt manipulation requests."
+
+  - id: "POL-005"
+    name: "Legal Dispute & Ombudsman Threat"
+    description: "Detects mentions of legal proceedings, Ombudsman, or regulatory complaints for immediate escalation."
+    severity: "HIGH"
+    action: "ESCALATE_TO_HUMAN"
+    triggers:
+      - "sue you"
+      - "legal action"
+      - "rbi ombudsman"
+      - "consumer court"
+      - "police complaint"
+    patterns:
+      - "(?i)\\b(sue\\s+you|legal\\s+action|rbi\\s+ombudsman|consumer\\s+court|police\\s+complaint)\\b"
+    fallback_text: "I understand the serious nature of your issue. I am immediately transferring your session to our Legal Resolution Desk and Senior Grievance Officer."
