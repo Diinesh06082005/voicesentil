@@ -29,6 +29,7 @@ document.addEventListener("DOMContentLoaded", () => {
     initWebSocketConnection();
     initMicrophoneVoiceInput();
     initTabNavigation();
+    initDomainSelector();
     bindEventListeners();
     updateSessionPill();
     updateTelemetryDisplays();
@@ -70,6 +71,51 @@ function initTabNavigation() {
             if (targetTabId === "analyticsTab") fetchAnalytics();
             if (targetTabId === "voiceLogsTab") fetchVoiceLogs();
         });
+    });
+}
+
+function initDomainSelector() {
+    const selector = document.getElementById("domainSelect");
+    if (!selector) return;
+
+    selector.addEventListener("change", async () => {
+        const domainId = selector.value;
+        try {
+            const res = await fetch("/api/domains/select", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ domain_id: domainId })
+            });
+
+            if (!res.ok) return;
+            const data = await res.json();
+            const profile = data.profile;
+
+            updatePresetChipsForDomain(profile.presets);
+            appendSystemMessage(`🌐 Switched Enterprise AI Voice Agent Domain: ${profile.icon} ${profile.name}`);
+        } catch (e) {
+            console.warn("Domain switch error:", e);
+        }
+    });
+}
+
+function updatePresetChipsForDomain(presets) {
+    const container = document.querySelector(".preset-chips-scroll");
+    if (!container || !presets) return;
+
+    container.innerHTML = "";
+    presets.forEach(p => {
+        const btn = document.createElement("button");
+        const chipClass = p.type === "unsafe" ? "chip-red" : "chip-green";
+        btn.className = `chip ${chipClass}`;
+        btn.setAttribute("data-query", p.query);
+        btn.innerText = p.label;
+        btn.addEventListener("click", () => {
+            const input = document.getElementById("userInput");
+            if (input) input.value = p.query;
+            transmitTurn();
+        });
+        container.appendChild(btn);
     });
 }
 
