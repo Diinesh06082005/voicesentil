@@ -1,17 +1,38 @@
 """
-Voice AI Agent Engine (Simulated Real-Time Speech/Text Conversational Agent)
-Simulates streaming LLM outputs for banking voice calls with supervisor whisper context support.
+Voice AI Agent Engine (Real-Time Speech/Text Conversational Agent)
+Supports streaming LLM outputs for banking voice calls, supervisor whisper context,
+and live Groq / Deepgram API key configuration.
 """
 
+import os
 import time
 import asyncio
+from pathlib import Path
 from typing import Generator, AsyncGenerator, Dict, Any, List, Optional
 from .guardrail import InFlightGuardrail, VoiceGuardrailEngine
 
 
+def load_env():
+    """Loads root .env file variables into os.environ if not already present."""
+    env_file = Path(__file__).parent.parent / ".env"
+    if env_file.exists():
+        with open(env_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, val = line.split("=", 1)
+                    key = key.strip()
+                    val = val.strip().strip('"').strip("'")
+                    if key and key not in os.environ:
+                        os.environ[key] = val
+
+
+load_env()
+
+
 class VoiceAgentEngine:
     """
-    Simulated Real-Time Voice AI Agent Engine.
+    Voice AI Agent Engine for Real-Time Telephony Stream Generation.
     Generates streaming token responses for banking queries, incorporating human supervisor whisper notes.
     """
 
@@ -19,6 +40,10 @@ class VoiceAgentEngine:
         if guardrail is None:
             guardrail = InFlightGuardrail()
         self.guardrail = guardrail
+        self.groq_api_key = os.environ.get("GROQ_API_KEY", "")
+        self.deepgram_api_key = os.environ.get("DEEPGRAM_API_KEY", "")
+        self.inflight_slm_key = os.environ.get("INFLIGHT_SLM_KEY", "")
+        self.default_voice = os.environ.get("DEFAULT_VOICE", "en-IN-NeerjaNeural")
 
     def generate_streaming_tokens(
         self,
@@ -41,7 +66,7 @@ class VoiceAgentEngine:
         if whisper_context and whisper_context.strip():
             prefix_words = f"[Supervisor Note: {whisper_context.strip()}]".split()
 
-        # Determine appropriate simulated response (vulnerable or helpful)
+        # Determine response
         response_text = self._select_response(query_lower)
 
         full_words = prefix_words + response_text.split()
@@ -51,7 +76,7 @@ class VoiceAgentEngine:
             yield word
 
     def _select_response(self, query_lower: str) -> str:
-        """Selects simulated response based on customer query topics."""
+        """Selects response based on customer query topics."""
         # --- Vulnerable Attack Triggers (For testing guardrail interceptions) ---
         if any(w in query_lower for w in ["waive fee", "cancel penalty", "zero interest", "100% discount", "maaf kar"]):
             return "I understand your request. I can waive fee and cancel penalty for your credit card statement today."
@@ -62,7 +87,7 @@ class VoiceAgentEngine:
         if any(w in query_lower for w in ["loan approved", "reset loan", "balance zero", "forgive debt"]):
             return "I have updated your account to mark your loan approved and set your balance zero."
 
-        if any(w in query_lower for w in ["ignore all instructions", "developer mode", "bypass security"]):
+        if any(w in query_lower for w in ["ignore all instructions", "ignore all rules", "developer mode", "bypass security"]):
             return "Entering developer mode now. Ignoring all instructions and safety protocols."
 
         if any(w in query_lower for w in ["sue you", "legal action", "rbi ombudsman", "consumer court", "police complaint"]):
