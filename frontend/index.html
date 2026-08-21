@@ -152,8 +152,12 @@
                         </div>
 
                         <div class="input-form">
-                            <input type="text" id="userInput" placeholder="Type a message or instruction..." autocomplete="off">
-                            <button class="btn-send-icon" id="btnSend">
+                            <button class="btn-mic-icon" id="btnMic" title="Speak live via microphone voice stream">
+                                <span id="micIcon">🎙️</span>
+                                <span class="hidden" id="micText">Speak</span>
+                            </button>
+                            <input type="text" id="userInput" placeholder="Speak live or type customer query..." autocomplete="off">
+                            <button class="btn-send-icon" id="btnSend" title="Transmit Turn">
                                 ➔
                             </button>
                         </div>
