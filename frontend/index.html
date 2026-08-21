@@ -156,7 +156,11 @@
                         </div>
 
                         <div class="input-form">
-                            <input type="text" id="userInput" placeholder="Type simulated customer speech query or click attack preset..." autocomplete="off">
+                            <button class="btn btn-purple mic-btn" id="btnMic" title="Click to speak live via microphone voice stream">
+                                <span class="mic-icon" id="micIcon">🎙️</span>
+                                <span class="mic-text" id="micText">Speak</span>
+                            </button>
+                            <input type="text" id="userInput" placeholder="Click 'Speak' or type customer speech query..." autocomplete="off">
                             <button class="btn btn-cyan" id="btnSend">
                                 <span>Transmit Turn</span>
                                 <span class="btn-icon">⚡</span>
