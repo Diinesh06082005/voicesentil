@@ -108,6 +108,21 @@ function bindEventListeners() {
     // Adversarial Benchmark
     const btnRunBenchmark = document.getElementById("btnRunBenchmark");
     if (btnRunBenchmark) btnRunBenchmark.addEventListener("click", runAdversarialBenchmark);
+
+    // Theme Toggle
+    const themeToggleBtn = document.getElementById("themeToggleBtn");
+    if (themeToggleBtn) {
+        themeToggleBtn.addEventListener("click", () => {
+            const isLight = document.body.getAttribute("data-theme") === "light";
+            if (isLight) {
+                document.body.removeAttribute("data-theme");
+                themeToggleBtn.innerText = "☀️";
+            } else {
+                document.body.setAttribute("data-theme", "light");
+                themeToggleBtn.innerText = "🌙";
+            }
+        });
+    }
 }
 
 // ----------------------------------------------------
