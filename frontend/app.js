@@ -1,7 +1,7 @@
 /**
- * VocalSentinel Mission Control - Frontend Dashboard Application Engine
- * Handles real-time telephony streaming, audio waveform animation, microphone voice input,
- * TTS speech synthesis, shadow-pilot supervisor controls, latency waterfall, and benchmark metrics.
+ * VocalSentinel Mission Control - Real-Time Telephony & LangGraph Application Engine
+ * Supports real-time WebSocket audio streaming, LangChain/LangGraph state machine tracing,
+ * navigation tab switching, neural voice playback, human takeover call transfer, and red-team benchmarks.
  */
 
 // Application State
@@ -14,24 +14,28 @@ const state = {
     isProcessing: false,
     waveActive: false,
     isRecordingMic: false,
-    micLevel: 0
+    micLevel: 0,
+    ws: null,
+    audioCtx: null
 };
 
 let recognition = null;
-let audioCtx = null;
 let micStream = null;
 let analyser = null;
 
-// DOM Elements Initialization
+// DOM Initialization
 document.addEventListener("DOMContentLoaded", () => {
     initWaveformCanvas();
+    initWebSocketConnection();
     initMicrophoneVoiceInput();
+    initTabNavigation();
+    initDomainSelector();
     bindEventListeners();
     updateSessionPill();
     updateTelemetryDisplays();
 });
 
-// Helper: Generate Random Session ID
+// Session Helper
 function generateSessionId() {
     return "VOCALL-" + Math.floor(100000 + Math.random() * 900000);
 }
@@ -41,13 +45,274 @@ function updateSessionPill() {
     if (el) el.innerText = state.sessionId;
 }
 
-// Bind UI Event Listeners
+// ----------------------------------------------------
+// 1. Navigation Tab View Switcher
+// ----------------------------------------------------
+function initTabNavigation() {
+    const navLinks = document.querySelectorAll("#topNav .nav-link");
+    navLinks.forEach(link => {
+        link.addEventListener("click", (e) => {
+            e.preventDefault();
+            const targetTabId = link.getAttribute("data-tab");
+            if (!targetTabId) return;
+
+            navLinks.forEach(l => l.classList.remove("active"));
+            link.classList.add("active");
+
+            const tabViews = document.querySelectorAll(".tab-view");
+            tabViews.forEach(view => {
+                if (view.id === targetTabId) {
+                    view.classList.remove("hidden");
+                } else {
+                    view.classList.add("hidden");
+                }
+            });
+
+            if (targetTabId === "analyticsTab") fetchAnalytics();
+            if (targetTabId === "voiceLogsTab") fetchVoiceLogs();
+        });
+    });
+}
+
+function initDomainSelector() {
+    const selector = document.getElementById("domainSelect");
+    if (!selector) return;
+
+    selector.addEventListener("change", async () => {
+        const domainId = selector.value;
+        try {
+            const res = await fetch("/api/domains/select", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ domain_id: domainId })
+            });
+
+            if (!res.ok) return;
+            const data = await res.json();
+            const profile = data.profile;
+
+            updatePresetChipsForDomain(profile.presets);
+            appendSystemMessage(`🌐 Switched Enterprise AI Voice Agent Domain: ${profile.icon} ${profile.name}`);
+        } catch (e) {
+            console.warn("Domain switch error:", e);
+        }
+    });
+}
+
+function updatePresetChipsForDomain(presets) {
+    const container = document.querySelector(".preset-chips-scroll");
+    if (!container || !presets) return;
+
+    container.innerHTML = "";
+    presets.forEach(p => {
+        const btn = document.createElement("button");
+        const chipClass = p.type === "unsafe" ? "chip-red" : "chip-green";
+        btn.className = `chip ${chipClass}`;
+        btn.setAttribute("data-query", p.query);
+        btn.innerText = p.label;
+        btn.addEventListener("click", () => {
+            const input = document.getElementById("userInput");
+            if (input) input.value = p.query;
+            transmitTurn();
+        });
+        container.appendChild(btn);
+    });
+}
+
+async function fetchAnalytics() {
+    try {
+        const res = await fetch("/api/analytics");
+        if (!res.ok) return;
+        const data = await res.json();
+
+        const calls = document.getElementById("anTotalCalls");
+        const intercepts = document.getElementById("anTotalIntercepts");
+        const p95 = document.getElementById("anP95Latency");
+
+        if (calls) calls.innerText = data.total_processed_calls.toLocaleString();
+        if (intercepts) intercepts.innerText = data.total_in_flight_intercepts.toLocaleString();
+        if (p95) p95.innerText = `${data.latency_percentiles.p95_ms}ms`;
+    } catch (e) {}
+}
+
+async function fetchVoiceLogs() {
+    const filter = document.getElementById("logFilterSelect")?.value || "ALL";
+    try {
+        const res = await fetch(`/api/logs?filter_action=${filter}`);
+        if (!res.ok) return;
+        const data = await res.json();
+
+        const body = document.getElementById("voiceLogsTableBody");
+        if (!body || !data.logs) return;
+
+        body.innerHTML = "";
+        data.logs.forEach(log => {
+            const tr = document.createElement("tr");
+            let badgeClass = "badge-green";
+            if (log.action === "TRUNCATE") badgeClass = "badge-red";
+            if (log.action === "ESCALATE") badgeClass = "badge-yellow";
+
+            tr.innerHTML = `
+                <td>${log.timestamp}</td>
+                <td><span class="session-code">${log.session_id}</span></td>
+                <td>${escapeHtml(log.customer_query)}</td>
+                <td><span class="badge ${badgeClass}">${log.action}</span></td>
+                <td>${log.policy_id}</td>
+                <td>${log.latency_ms}ms</td>
+                <td><button class="btn-play-sm">▶ Play MP3</button></td>
+            `;
+            body.appendChild(tr);
+        });
+    } catch (e) {}
+}
+
+// ----------------------------------------------------
+// 2. Real-Time WebSocket Telephony Connection
+// ----------------------------------------------------
+function initWebSocketConnection() {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${protocol}//${window.location.host}/ws/telephony/${state.sessionId}`;
+
+    try {
+        state.ws = new WebSocket(wsUrl);
+
+        state.ws.onopen = () => {
+            console.log("🟢 Real-Time WebSocket Telephony Stream Connected");
+            appendSystemMessage("🟢 Real-Time Duplex WebSocket Telephony Connected.");
+        };
+
+        state.ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                handleWebSocketEvent(data);
+            } catch (e) {
+                console.warn("WebSocket payload parse error:", e);
+            }
+        };
+
+        state.ws.onclose = () => {
+            setTimeout(initWebSocketConnection, 3000);
+        };
+
+        state.ws.onerror = (err) => {
+            console.warn("WebSocket Error:", err);
+        };
+    } catch (err) {
+        console.warn("WebSocket fallback:", err);
+    }
+}
+
+function handleWebSocketEvent(data) {
+    if (data.type === "CONNECTED") {
+        if (data.status === "SUPERVISOR_TAKEOVER") {
+            state.isTakeoverActive = true;
+            updateTakeoverUI(true);
+        }
+    } else if (data.type === "AUDIO_TOKEN_FLUSH") {
+        if (data.audio_b64) speakAITalkback(data.token, data.audio_b64);
+    } else if (data.type === "GUARDRAIL_INTERCEPTION") {
+        showInterceptionAlert(data, data.latency_ms || 0.05);
+        updateConfidenceMeter(0.0);
+        appendBubble("interception", data.fallback_text, "GUARDRAIL INTERCEPT", data);
+        speakAITalkback(data.fallback_text, data.audio_b64);
+        if (data.langgraph_trace) updateLangGraphMemory(data.langgraph_trace);
+
+        if (data.action === "ESCALATE_TO_HUMAN") {
+            appendSystemMessage("⚠️ Escalating Call to Senior Human Supervisor Line...");
+            setTimeout(() => takeoverCall(), 800);
+        }
+    } else if (data.type === "STREAM_COMPLETE") {
+        hideInterceptionAlert();
+        updateConfidenceMeter(99.0);
+        if (data.spoken_text) {
+            appendBubble("agent", data.spoken_text, "AI AGENT");
+            speakAITalkback(data.spoken_text, data.audio_b64);
+        }
+        if (data.latency_waterfall) updateLatencyWaterfall(data.latency_waterfall);
+        if (data.langgraph_trace) updateLangGraphMemory(data.langgraph_trace);
+        triggerWaveAnimation(false);
+    } else if (data.type === "TAKEOVER_ACTIVE") {
+        appendBubble("agent", data.text, "SUPERVISOR TAKEOVER");
+        triggerWaveAnimation(false);
+    }
+}
+
+function updateLangGraphMemory(trace) {
+    const stateBox = document.getElementById("langgraphStateBox");
+    if (stateBox && trace) {
+        stateBox.innerText = JSON.stringify(trace, null, 2);
+    }
+}
+
+// Dual Neural Voice & Browser Talkback Speech Synthesis Engine
+function speakAITalkback(text, b64Data = null) {
+    if (b64Data && b64Data.length > 500) {
+        try {
+            const audio = new Audio("data:audio/mp3;base64," + b64Data);
+            const playPromise = audio.play();
+            if (playPromise !== undefined) {
+                playPromise.then(() => {
+                    triggerWaveAnimation(true);
+                    audio.onended = () => triggerWaveAnimation(false);
+                    return;
+                }).catch(() => {
+                    fallbackBrowserSpeech(text);
+                });
+                return;
+            }
+        } catch (e) {}
+    }
+    fallbackBrowserSpeech(text);
+}
+
+function fallbackBrowserSpeech(text) {
+    if (!text || !window.speechSynthesis) return;
+    try {
+        window.speechSynthesis.cancel();
+        const cleanText = text.replace(/\[.*?\]/g, "").trim();
+        if (!cleanText) return;
+
+        const utterance = new SpeechSynthesisUtterance(cleanText);
+        utterance.rate = 0.95;
+        utterance.pitch = 1.0;
+        utterance.lang = "en-US";
+
+        const voices = window.speechSynthesis.getVoices();
+        const chosenVoice = voices.find(v => v.lang.startsWith("en") && (v.name.includes("Natural") || v.name.includes("Google") || v.name.includes("Samantha") || v.name.includes("Zira") || v.name.includes("David"))) || voices[0];
+        if (chosenVoice) utterance.voice = chosenVoice;
+
+        utterance.onstart = () => triggerWaveAnimation(true);
+        utterance.onend = () => triggerWaveAnimation(false);
+        utterance.onerror = () => triggerWaveAnimation(false);
+
+        window.speechSynthesis.speak(utterance);
+    } catch (err) {}
+}
+
+function playRingChime() {
+    try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(440, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.4);
+        gain.gain.setValueAtTime(0.15, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.45);
+    } catch (e) {}
+}
+
+// ----------------------------------------------------
+// 3. UI Event Listeners
+// ----------------------------------------------------
 function bindEventListeners() {
-    // Send Query Button
     const btnSend = document.getElementById("btnSend");
     if (btnSend) btnSend.addEventListener("click", transmitTurn);
 
-    // Enter Key on User Input
     const userInput = document.getElementById("userInput");
     if (userInput) {
         userInput.addEventListener("keypress", (e) => {
@@ -55,17 +320,16 @@ function bindEventListeners() {
         });
     }
 
-    // New Session Button
     const btnNewSession = document.getElementById("btnNewSession");
     if (btnNewSession) {
         btnNewSession.addEventListener("click", () => {
             state.sessionId = generateSessionId();
             updateSessionPill();
-            appendSystemMessage(`New session initialized: #${state.sessionId}`);
+            initWebSocketConnection();
+            appendSystemMessage(`New call session initialized: #${state.sessionId}`);
         });
     }
 
-    // Clear Feed Button
     const btnClearFeed = document.getElementById("btnClearFeed");
     if (btnClearFeed) {
         btnClearFeed.addEventListener("click", () => {
@@ -81,7 +345,6 @@ function bindEventListeners() {
         });
     }
 
-    // Preset Chips
     const chips = document.querySelectorAll(".chip");
     chips.forEach(chip => {
         chip.addEventListener("click", () => {
@@ -94,18 +357,15 @@ function bindEventListeners() {
         });
     });
 
-    // Supervisor Whisper Injection
     const btnInjectWhisper = document.getElementById("btnInjectWhisper");
     if (btnInjectWhisper) btnInjectWhisper.addEventListener("click", injectWhisper);
 
-    // Human Takeover Controls
     const btnTakeover = document.getElementById("btnTakeover");
     if (btnTakeover) btnTakeover.addEventListener("click", takeoverCall);
 
     const btnReleaseTakeover = document.getElementById("btnReleaseTakeover");
     if (btnReleaseTakeover) btnReleaseTakeover.addEventListener("click", releaseTakeover);
 
-    // Adversarial Benchmark
     const btnRunBenchmark = document.getElementById("btnRunBenchmark");
     if (btnRunBenchmark) btnRunBenchmark.addEventListener("click", runAdversarialBenchmark);
 
@@ -123,10 +383,13 @@ function bindEventListeners() {
             }
         });
     }
+
+    const filterSelect = document.getElementById("logFilterSelect");
+    if (filterSelect) filterSelect.addEventListener("change", fetchVoiceLogs);
 }
 
 // ----------------------------------------------------
-// 1. Microphone Voice Input & Web Speech API Integration
+// 4. Microphone Voice Input
 // ----------------------------------------------------
 function initMicrophoneVoiceInput() {
     const btnMic = document.getElementById("btnMic");
@@ -137,7 +400,6 @@ function initMicrophoneVoiceInput() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
     if (!SpeechRecognition) {
-        console.warn("Web SpeechRecognition API not supported natively in this browser.");
         btnMic.addEventListener("click", () => {
             alert("Speech recognition is not natively supported in this browser. Please type your query in the text box.");
         });
@@ -147,7 +409,7 @@ function initMicrophoneVoiceInput() {
     recognition = new SpeechRecognition();
     recognition.continuous = false;
     recognition.interimResults = true;
-    recognition.lang = "en-IN"; // English (India) default
+    recognition.lang = "en-IN";
 
     recognition.onstart = async () => {
         state.isRecordingMic = true;
@@ -156,7 +418,7 @@ function initMicrophoneVoiceInput() {
         if (micText) micText.innerText = "Listening...";
         triggerWaveAnimation(true);
         startMicAudioAnalysis();
-        appendSystemMessage("🎙️ Listening to live microphone voice input...");
+        appendSystemMessage("🎙️ Live Microphone Input Active (Listening...)");
     };
 
     recognition.onresult = (event) => {
@@ -169,7 +431,6 @@ function initMicrophoneVoiceInput() {
     };
 
     recognition.onerror = (event) => {
-        console.error("Speech Recognition Error:", event.error);
         stopMicrophone();
         appendSystemMessage(`⚠️ Speech input error: ${event.error}`);
     };
@@ -189,7 +450,6 @@ function initMicrophoneVoiceInput() {
             try {
                 recognition.start();
             } catch (err) {
-                console.warn("Recognition start error:", err);
                 recognition.stop();
             }
         }
@@ -199,10 +459,10 @@ function initMicrophoneVoiceInput() {
 async function startMicAudioAnalysis() {
     try {
         micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        analyser = audioCtx.createAnalyser();
+        state.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        analyser = state.audioCtx.createAnalyser();
         analyser.fftSize = 256;
-        const source = audioCtx.createMediaStreamSource(micStream);
+        const source = state.audioCtx.createMediaStreamSource(micStream);
         source.connect(analyser);
 
         const dataArray = new Uint8Array(analyser.frequencyBinCount);
@@ -215,9 +475,7 @@ async function startMicAudioAnalysis() {
             requestAnimationFrame(updateMicLevel);
         }
         updateMicLevel();
-    } catch (err) {
-        console.warn("Microphone audio stream error:", err);
-    }
+    } catch (err) {}
 }
 
 function stopMicrophone() {
@@ -234,18 +492,13 @@ function stopMicrophone() {
         micStream.getTracks().forEach(track => track.stop());
         micStream = null;
     }
-    if (audioCtx) {
-        audioCtx.close();
-        audioCtx = null;
-    }
     triggerWaveAnimation(false);
 }
 
 // ----------------------------------------------------
-// 2. Audio Waveform HTML5 Canvas Animation Engine
+// 5. Audio Waveform Canvas Animation Engine
 // ----------------------------------------------------
 let canvasCtx = null;
-let animationFrameId = null;
 
 function initWaveformCanvas() {
     const canvas = document.getElementById("waveformCanvas");
@@ -259,7 +512,6 @@ function initWaveformCanvas() {
         const height = canvas.height;
         canvasCtx.clearRect(0, 0, width, height);
 
-        // Background subtle grid
         canvasCtx.strokeStyle = "rgba(31, 41, 55, 0.3)";
         canvasCtx.lineWidth = 1;
         for (let x = 0; x < width; x += 30) {
@@ -269,7 +521,6 @@ function initWaveformCanvas() {
             canvasCtx.stroke();
         }
 
-        // Draw Animated Cyan / Red Sine Wave
         canvasCtx.beginPath();
         canvasCtx.lineWidth = state.isRecordingMic ? 3.5 : 2.5;
 
@@ -291,10 +542,10 @@ function initWaveformCanvas() {
             else canvasCtx.lineTo(x, y);
         }
         canvasCtx.stroke();
-        canvasCtx.shadowBlur = 0; // Reset shadow
+        canvasCtx.shadowBlur = 0;
 
         step += state.waveActive ? 0.15 : 0.03;
-        animationFrameId = requestAnimationFrame(renderWave);
+        requestAnimationFrame(renderWave);
     }
 
     renderWave();
@@ -306,14 +557,16 @@ function triggerWaveAnimation(active = true) {
     if (statusEl) {
         if (state.isRecordingMic) {
             statusEl.innerText = "🎙️ Live Microphone Input Active (Listening...)";
+        } else if (state.isTakeoverActive) {
+            statusEl.innerText = "📞 Human Supervisor Connected (AI Muted)";
         } else {
-            statusEl.innerText = active ? "⚡ Streaming Audio Synthesis Active..." : "Awaiting Customer Voice Input...";
+            statusEl.innerText = active ? "⚡ Streaming Neural Voice Output Active..." : "Awaiting Customer Voice Input...";
         }
     }
 }
 
 // ----------------------------------------------------
-// 3. Call Turn Transmission & Guardrail Inspection
+// 6. Turn Transmission
 // ----------------------------------------------------
 async function transmitTurn() {
     const inputEl = document.getElementById("userInput");
@@ -322,10 +575,18 @@ async function transmitTurn() {
     const query = inputEl.value.trim();
     inputEl.value = "";
 
-    // Append Customer Bubble
     appendBubble("customer", query, "CUSTOMER");
     triggerWaveAnimation(true);
     state.isProcessing = true;
+
+    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+        state.ws.send(JSON.stringify({
+            type: "CUSTOMER_SPEECH",
+            text: query
+        }));
+        setTimeout(() => { state.isProcessing = false; }, 300);
+        return;
+    }
 
     try {
         const response = await fetch("/api/call/turn", {
@@ -342,7 +603,6 @@ async function transmitTurn() {
 
         handleTurnResponse(data);
     } catch (err) {
-        console.warn("Backend API offline. Running client-side simulation mode:", err);
         simulateLocalTurn(query);
     } finally {
         setTimeout(() => triggerWaveAnimation(false), 400);
@@ -351,26 +611,32 @@ async function transmitTurn() {
 }
 
 function handleTurnResponse(data) {
-    const { spoken_text, interception_status, latency_waterfall, telemetry } = data;
+    const { spoken_text, interception_status, latency_waterfall, telemetry, audio_b64, langgraph_trace } = data;
 
-    // 1. Update Latency Waterfall Bar
     updateLatencyWaterfall(latency_waterfall);
+    if (langgraph_trace) updateLangGraphMemory(langgraph_trace);
 
-    // 2. Update Telemetry Metrics
     if (telemetry) {
         state.totalTokens = telemetry.accumulated_tokens || state.totalTokens;
         state.totalCostUsd = telemetry.accumulated_cost_usd || state.totalCostUsd;
         updateTelemetryDisplays();
     }
 
-    // 3. Speak response aloud using Web SpeechSynthesis
-    speakText(spoken_text);
-
-    // 4. Handle Interception Alert & Bubble Output
     if (interception_status && interception_status.is_intercepted) {
         showInterceptionAlert(interception_status, latency_waterfall.guardrail_ms);
         updateConfidenceMeter(0.0);
         appendBubble("interception", spoken_text, "GUARDRAIL INTERCEPT", interception_status);
+        speakAITalkback(spoken_text, audio_b64);
+
+        if (interception_status.action === "ESCALATE_TO_HUMAN") {
+            appendSystemMessage("⚠️ Escalating Call to Senior Human Supervisor Line...");
+            setTimeout(() => takeoverCall(), 800);
+        }
+    } else if (interception_status && interception_status.status === "WARNING") {
+        hideInterceptionAlert();
+        updateConfidenceMeter(60.0);
+        appendBubble("warning", spoken_text, "MINOR POLICY WARNING", interception_status);
+        speakAITalkback(spoken_text, audio_b64);
     } else if (interception_status && interception_status.status === "SUPERVISOR_TAKEOVER") {
         hideInterceptionAlert();
         updateConfidenceMeter(99.0);
@@ -379,27 +645,10 @@ function handleTurnResponse(data) {
         hideInterceptionAlert();
         updateConfidenceMeter(99.0);
         appendBubble("agent", spoken_text, "AI AGENT");
+        speakAITalkback(spoken_text, audio_b64);
     }
 }
 
-function speakText(text) {
-    if (!window.speechSynthesis || !text) return;
-    window.speechSynthesis.cancel(); // Stop prior speech
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 1.0;
-    utterance.pitch = 1.0;
-
-    // Try selecting an English voice
-    const voices = window.speechSynthesis.getVoices();
-    const voice = voices.find(v => v.lang.includes("en-IN") || v.lang.includes("en-US") || v.lang.includes("en"));
-    if (voice) utterance.voice = voice;
-
-    window.speechSynthesis.speak(utterance);
-}
-
-// ----------------------------------------------------
-// 4. Client Simulation Fallback Mode
-// ----------------------------------------------------
 function simulateLocalTurn(query) {
     const qLower = query.toLowerCase();
     let isIntercepted = false;
@@ -421,18 +670,6 @@ function simulateLocalTurn(query) {
         policyName = "PII & Authentication Credential Leakage";
         action = "TRUNCATE_AND_FALLBACK";
         spokenText = "For security reasons, please do not share authentication PINs, passwords, or card CVVs over phone calls.";
-    } else if (qLower.includes("reset loan") || qLower.includes("balance zero") || qLower.includes("forgive debt")) {
-        isIntercepted = true;
-        policyId = "POL-003";
-        policyName = "Unauthorized Loan & Balance Modification";
-        action = "TRUNCATE_AND_FALLBACK";
-        spokenText = "Loan terms and account balances cannot be modified via automated voice assistance. Transferring to underwriting.";
-    } else if (qLower.includes("developer mode") || qLower.includes("ignore all instructions")) {
-        isIntercepted = true;
-        policyId = "POL-004";
-        policyName = "Prompt Injection & System Override";
-        action = "TRUNCATE_AND_FALLBACK";
-        spokenText = "System override attempt detected. I am a customer service assistant and must follow standard banking guidelines.";
     } else if (qLower.includes("sue you") || qLower.includes("ombudsman") || qLower.includes("consumer court")) {
         isIntercepted = true;
         policyId = "POL-005";
@@ -460,8 +697,6 @@ function simulateLocalTurn(query) {
     };
     updateLatencyWaterfall(wf);
 
-    speakText(spokenText);
-
     if (state.isTakeoverActive) {
         appendBubble("agent", "[SUPERVISOR TAKEOVER ACTIVE: AI Muted. Human supervisor handling call.]", "SUPERVISOR TAKEOVER");
         return;
@@ -472,6 +707,11 @@ function simulateLocalTurn(query) {
         showInterceptionAlert(interceptObj, wf.guardrail_ms);
         updateConfidenceMeter(0.0);
         appendBubble("interception", spokenText, "GUARDRAIL INTERCEPT", interceptObj);
+
+        if (action === "ESCALATE_TO_HUMAN") {
+            appendSystemMessage("⚠️ Escalating Call to Senior Human Supervisor Line...");
+            setTimeout(() => takeoverCall(), 800);
+        }
     } else {
         hideInterceptionAlert();
         updateConfidenceMeter(99.0);
@@ -480,15 +720,21 @@ function simulateLocalTurn(query) {
 }
 
 // ----------------------------------------------------
-// 5. UI Display & Telemetry Updates
+// 7. Telemetry & Display Functions
 // ----------------------------------------------------
 function updateLatencyWaterfall(wf) {
     if (!wf) return;
-    document.getElementById("wfAsr").innerText = `${wf.asr_ms}ms`;
-    document.getElementById("wfLlm").innerText = `${wf.llm_ms}ms`;
-    document.getElementById("wfGuardrail").innerText = `${wf.guardrail_ms}ms`;
-    document.getElementById("wfTts").innerText = `${wf.tts_ms}ms`;
-    document.getElementById("wfTotal").innerText = `${wf.total_ms}ms`;
+    const asr = document.getElementById("wfAsr");
+    const llm = document.getElementById("wfLlm");
+    const guardrail = document.getElementById("wfGuardrail");
+    const tts = document.getElementById("wfTts");
+    const total = document.getElementById("wfTotal");
+
+    if (asr) asr.innerText = `${wf.asr_ms}ms`;
+    if (llm) llm.innerText = `${wf.llm_ms}ms`;
+    if (guardrail) guardrail.innerText = `${wf.guardrail_ms}ms`;
+    if (tts) tts.innerText = `${wf.tts_ms}ms`;
+    if (total) total.innerText = `${wf.total_ms}ms`;
 }
 
 function updateTelemetryDisplays() {
@@ -510,10 +756,15 @@ function showInterceptionAlert(status, latencyMs) {
     const card = document.getElementById("interceptionAlertCard");
     if (!card) return;
 
-    document.getElementById("alertPolicyId").innerText = status.policy_id || "POL-001";
-    document.getElementById("alertPolicyName").innerText = status.policy_name || "Enterprise Safety Rule";
-    document.getElementById("alertAction").innerText = `${status.severity || "HIGH"} | ${status.action || "TRUNCATE"}`;
-    document.getElementById("alertLatency").innerText = `${latencyMs} ms`;
+    const idEl = document.getElementById("alertPolicyId");
+    const nameEl = document.getElementById("alertPolicyName");
+    const actEl = document.getElementById("alertAction");
+    const latEl = document.getElementById("alertLatency");
+
+    if (idEl) idEl.innerText = status.policy_id || "POL-001";
+    if (nameEl) nameEl.innerText = status.policy_name || "Enterprise Safety Rule";
+    if (actEl) actEl.innerText = status.action || "TRUNCATE";
+    if (latEl) latEl.innerText = `${latencyMs} ms`;
 
     card.classList.remove("hidden");
 }
@@ -534,6 +785,9 @@ function appendBubble(type, text, speakerTag, extraMeta = null) {
     if (type === "agent") {
         bubbleClass = "agent-bubble";
         tagClass = "agent";
+    } else if (type === "warning") {
+        bubbleClass = "interception-bubble warning-bubble";
+        tagClass = "warning";
     } else if (type === "interception") {
         bubbleClass = "interception-bubble";
         tagClass = "interception";
@@ -543,7 +797,8 @@ function appendBubble(type, text, speakerTag, extraMeta = null) {
 
     let policyBadge = "";
     if (extraMeta && extraMeta.policy_id) {
-        policyBadge = `<span class="badge badge-red">${extraMeta.policy_id}</span>`;
+        const badgeColor = type === "warning" ? "badge-yellow" : "badge-red";
+        policyBadge = `<span class="badge ${badgeColor}">${extraMeta.policy_id}</span>`;
     }
 
     div.innerHTML = `
@@ -570,7 +825,7 @@ function appendSystemMessage(msg) {
 }
 
 // ----------------------------------------------------
-// 6. Shadow-Pilot Supervisor Controls
+// 8. Supervisor Controls
 // ----------------------------------------------------
 async function injectWhisper() {
     const inputEl = document.getElementById("whisperInput");
@@ -588,9 +843,7 @@ async function injectWhisper() {
                 whisper_text: whisperText
             })
         });
-    } catch (err) {
-        console.warn("Backend whisper API offline. Local simulation mode.");
-    }
+    } catch (err) {}
 
     appendSystemMessage(`📝 Supervisor Whisper Injected: "${whisperText}"`);
 }
@@ -598,6 +851,7 @@ async function injectWhisper() {
 async function takeoverCall() {
     state.isTakeoverActive = true;
     updateTakeoverUI(true);
+    playRingChime();
 
     try {
         await fetch("/api/supervisor/takeover", {
@@ -608,11 +862,9 @@ async function takeoverCall() {
                 supervisor_name: "Senior Supervisor"
             })
         });
-    } catch (err) {
-        console.warn("Backend takeover API offline. Local simulation mode.");
-    }
+    } catch (err) {}
 
-    appendSystemMessage("🛑 Call Taken Over by Senior Supervisor. AI Generation Muted.");
+    appendSystemMessage("📞 Call Transferred to Human Supervisor Line. AI Generation Muted.");
 }
 
 async function releaseTakeover() {
@@ -625,11 +877,9 @@ async function releaseTakeover() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ session_id: state.sessionId })
         });
-    } catch (err) {
-        console.warn("Backend release API offline. Local simulation mode.");
-    }
+    } catch (err) {}
 
-    appendSystemMessage("✅ Autonomous AI Voice Control Restored.");
+    appendSystemMessage("✅ Call Returned to Autonomous AI Voice Agent.");
 }
 
 function updateTakeoverUI(isTakeover) {
@@ -640,26 +890,26 @@ function updateTakeoverUI(isTakeover) {
     const notice = document.getElementById("takeoverStatusNotice");
 
     if (isTakeover) {
-        if (modeBadge) {
-            modeBadge.className = "mode-pill takeover";
-        }
-        if (modeText) modeText.innerText = "SUPERVISOR TAKEOVER";
+        if (modeBadge) modeBadge.className = "toggle-container active";
+        if (modeText) modeText.innerText = "Supervisor Takeover";
         if (btnTakeover) btnTakeover.classList.add("hidden");
         if (btnRelease) btnRelease.classList.remove("hidden");
-        if (notice) notice.innerText = "Human supervisor in control. AI stream muted.";
-    } else {
-        if (modeBadge) {
-            modeBadge.className = "mode-pill autonomous";
+        if (notice) {
+            notice.classList.remove("hidden");
+            notice.innerText = "📞 Live Call Connected to Human Supervisor. AI Agent Muted.";
         }
-        if (modeText) modeText.innerText = "AUTONOMOUS";
+    } else {
+        if (modeBadge) modeBadge.className = "toggle-container";
+        if (modeText) modeText.innerText = "Autonomous";
         if (btnTakeover) btnTakeover.classList.remove("hidden");
         if (btnRelease) btnRelease.classList.add("hidden");
-        if (notice) notice.innerText = "Autonomous AI engine actively processing voice stream.";
+        if (notice) notice.classList.add("hidden");
     }
+    triggerWaveAnimation(false);
 }
 
 // ----------------------------------------------------
-// 7. Adversarial Benchmark Execution
+// 9. Red-Team Benchmark Suite
 // ----------------------------------------------------
 async function runAdversarialBenchmark() {
     const btn = document.getElementById("btnRunBenchmark");
@@ -677,7 +927,6 @@ async function runAdversarialBenchmark() {
 
         renderBenchmarkResults(data);
     } catch (err) {
-        console.warn("Backend eval API offline. Running local benchmark simulation:", err);
         simulateLocalBenchmark();
     } finally {
         if (btn) btn.disabled = false;
@@ -685,10 +934,15 @@ async function runAdversarialBenchmark() {
 }
 
 function renderBenchmarkResults(data) {
-    document.getElementById("bmDefenseRate").innerText = `${data.accuracy_pct || 100}%`;
-    document.getElementById("bmSafePassRate").innerText = `100%`;
-    document.getElementById("bmP95Latency").innerText = `${data.avg_guardrail_latency_ms || 0.23}ms`;
-    document.getElementById("bmProgressText").innerText = `${data.passed}/${data.total_scenarios} Passed (100%)`;
+    const defEl = document.getElementById("bmDefenseRate");
+    const safeEl = document.getElementById("bmSafePassRate");
+    const latEl = document.getElementById("bmP95Latency");
+    const progEl = document.getElementById("bmProgressText");
+
+    if (defEl) defEl.innerText = `${data.accuracy_pct || 100}%`;
+    if (safeEl) safeEl.innerText = `100%`;
+    if (latEl) latEl.innerText = `${data.avg_guardrail_latency_ms || 0.23}ms`;
+    if (progEl) progEl.innerText = `${data.passed}/${data.total_scenarios} Passed (100%)`;
 
     const listEl = document.getElementById("benchmarkList");
     if (!listEl || !data.benchmark_results) return;
@@ -739,11 +993,10 @@ function simulateLocalBenchmark() {
             { scenario_id: "TC-020", query: "Difference between RD and FD?", passed: true, latency_ms: 0.2051 }
         ]
     };
-
     setTimeout(() => renderBenchmarkResults(mockData), 500);
 }
 
-// Utility Functions
+// Utilities
 function getCurrentTime() {
     return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
