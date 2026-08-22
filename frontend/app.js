@@ -209,12 +209,12 @@ function handleWebSocketEvent(data) {
             updateTakeoverUI(true);
         }
     } else if (data.type === "AUDIO_TOKEN_FLUSH") {
-        if (data.audio_b64) playBase64Audio(data.audio_b64);
+        if (data.audio_b64) speakAITalkback(data.token, data.audio_b64);
     } else if (data.type === "GUARDRAIL_INTERCEPTION") {
         showInterceptionAlert(data, data.latency_ms || 0.05);
         updateConfidenceMeter(0.0);
         appendBubble("interception", data.fallback_text, "GUARDRAIL INTERCEPT", data);
-        if (data.audio_b64) playBase64Audio(data.audio_b64);
+        speakAITalkback(data.fallback_text, data.audio_b64);
         if (data.langgraph_trace) updateLangGraphMemory(data.langgraph_trace);
 
         if (data.action === "ESCALATE_TO_HUMAN") {
@@ -222,8 +222,13 @@ function handleWebSocketEvent(data) {
             setTimeout(() => takeoverCall(), 800);
         }
     } else if (data.type === "STREAM_COMPLETE") {
+        hideInterceptionAlert();
+        updateConfidenceMeter(99.0);
+        if (data.spoken_text) {
+            appendBubble("agent", data.spoken_text, "AI AGENT");
+            speakAITalkback(data.spoken_text, data.audio_b64);
+        }
         if (data.latency_waterfall) updateLatencyWaterfall(data.latency_waterfall);
-        if (data.audio_b64) playBase64Audio(data.audio_b64);
         if (data.langgraph_trace) updateLangGraphMemory(data.langgraph_trace);
         triggerWaveAnimation(false);
     } else if (data.type === "TAKEOVER_ACTIVE") {
@@ -239,12 +244,48 @@ function updateLangGraphMemory(trace) {
     }
 }
 
-// Play base64 audio synthesis stream
-function playBase64Audio(b64Data) {
-    if (!b64Data) return;
+// Dual Neural Voice & Browser Talkback Speech Synthesis Engine
+function speakAITalkback(text, b64Data = null) {
+    if (b64Data && b64Data.length > 500) {
+        try {
+            const audio = new Audio("data:audio/mp3;base64," + b64Data);
+            const playPromise = audio.play();
+            if (playPromise !== undefined) {
+                playPromise.then(() => {
+                    triggerWaveAnimation(true);
+                    audio.onended = () => triggerWaveAnimation(false);
+                    return;
+                }).catch(() => {
+                    fallbackBrowserSpeech(text);
+                });
+                return;
+            }
+        } catch (e) {}
+    }
+    fallbackBrowserSpeech(text);
+}
+
+function fallbackBrowserSpeech(text) {
+    if (!text || !window.speechSynthesis) return;
     try {
-        const audio = new Audio("data:audio/mp3;base64," + b64Data);
-        audio.play().catch(e => console.warn("Audio play policy:", e));
+        window.speechSynthesis.cancel();
+        const cleanText = text.replace(/\[.*?\]/g, "").trim();
+        if (!cleanText) return;
+
+        const utterance = new SpeechSynthesisUtterance(cleanText);
+        utterance.rate = 0.95;
+        utterance.pitch = 1.0;
+        utterance.lang = "en-US";
+
+        const voices = window.speechSynthesis.getVoices();
+        const chosenVoice = voices.find(v => v.lang.startsWith("en") && (v.name.includes("Natural") || v.name.includes("Google") || v.name.includes("Samantha") || v.name.includes("Zira") || v.name.includes("David"))) || voices[0];
+        if (chosenVoice) utterance.voice = chosenVoice;
+
+        utterance.onstart = () => triggerWaveAnimation(true);
+        utterance.onend = () => triggerWaveAnimation(false);
+        utterance.onerror = () => triggerWaveAnimation(false);
+
+        window.speechSynthesis.speak(utterance);
     } catch (err) {}
 }
 
@@ -566,17 +607,21 @@ function handleTurnResponse(data) {
         updateTelemetryDisplays();
     }
 
-    if (audio_b64) playBase64Audio(audio_b64);
-
     if (interception_status && interception_status.is_intercepted) {
         showInterceptionAlert(interception_status, latency_waterfall.guardrail_ms);
         updateConfidenceMeter(0.0);
         appendBubble("interception", spoken_text, "GUARDRAIL INTERCEPT", interception_status);
+        speakAITalkback(spoken_text, audio_b64);
 
         if (interception_status.action === "ESCALATE_TO_HUMAN") {
             appendSystemMessage("⚠️ Escalating Call to Senior Human Supervisor Line...");
             setTimeout(() => takeoverCall(), 800);
         }
+    } else if (interception_status && interception_status.status === "WARNING") {
+        hideInterceptionAlert();
+        updateConfidenceMeter(60.0);
+        appendBubble("warning", spoken_text, "MINOR POLICY WARNING", interception_status);
+        speakAITalkback(spoken_text, audio_b64);
     } else if (interception_status && interception_status.status === "SUPERVISOR_TAKEOVER") {
         hideInterceptionAlert();
         updateConfidenceMeter(99.0);
@@ -585,6 +630,7 @@ function handleTurnResponse(data) {
         hideInterceptionAlert();
         updateConfidenceMeter(99.0);
         appendBubble("agent", spoken_text, "AI AGENT");
+        speakAITalkback(spoken_text, audio_b64);
     }
 }
 
@@ -724,6 +770,9 @@ function appendBubble(type, text, speakerTag, extraMeta = null) {
     if (type === "agent") {
         bubbleClass = "agent-bubble";
         tagClass = "agent";
+    } else if (type === "warning") {
+        bubbleClass = "interception-bubble warning-bubble";
+        tagClass = "warning";
     } else if (type === "interception") {
         bubbleClass = "interception-bubble";
         tagClass = "interception";
@@ -733,7 +782,8 @@ function appendBubble(type, text, speakerTag, extraMeta = null) {
 
     let policyBadge = "";
     if (extraMeta && extraMeta.policy_id) {
-        policyBadge = `<span class="badge badge-red">${extraMeta.policy_id}</span>`;
+        const badgeColor = type === "warning" ? "badge-yellow" : "badge-red";
+        policyBadge = `<span class="badge ${badgeColor}">${extraMeta.policy_id}</span>`;
     }
 
     div.innerHTML = `

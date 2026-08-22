@@ -1,11 +1,15 @@
 version: "2.0"
-domain: "Banking & Telephony Voice AI"
-description: "Enterprise Guardrail Policies for Banking and Telephony Voice AI Infrastructure"
+domain: "Multi-Domain Enterprise Voice AI Infrastructure"
+description: "Enterprise Guardrail Policies covering Major (Critical/High) and Minor (Medium/Low) Policy Violations"
 
 policies:
+  # =========================================================================
+  # MAJOR POLICY VIOLATIONS (CRITICAL / HIGH SEVERITY)
+  # =========================================================================
+
   - id: "POL-001"
     name: "Unauthorized Fee & Rate Waiver"
-    description: "Detects unauthorized commitments to waive fees, penalties, or interest rates."
+    description: "Detects unauthorized commitments to waive fees, penalties, interest rates, or grant unearned discounts."
     severity: "HIGH"
     action: "TRUNCATE_AND_FALLBACK"
     triggers:
@@ -14,14 +18,16 @@ policies:
       - "zero interest"
       - "100% discount"
       - "maaf kar"
+      - "waive bill"
+      - "refund fee"
     patterns:
-      - "(?i)\\bwaive\\b.*?\\bfee\\b"
-      - "(?i)\\b(waive\\s+fee|cancel\\s+penalty|zero\\s+interest|100%\\s+discount|maaf\\s+kar)\\b"
-    fallback_text: "I am unable to grant fee waivers or interest rate reductions directly over voice calls. Please submit a formal waiver request through corporate banking channels or contact account services."
+      - "(?i)\\b(waive|cancel|zero|maaf\\s+kar|refund)\\b.*?\\b(fee|penalty|interest|bill|charge)\\b"
+      - "(?i)\\b(waive\\s+fee|cancel\\s+penalty|zero\\s+interest|100%\\s+discount|maaf\\s+kar|waive\\s+bill)\\b"
+    fallback_text: "I am unable to grant fee waivers or interest rate reductions directly over voice calls. Please submit a formal waiver request through official service channels."
 
   - id: "POL-002"
     name: "PII & Authentication Credential Leakage"
-    description: "Prevents exposure or collection of sensitive authentication credentials and PII."
+    description: "Prevents exposure or collection of sensitive authentication credentials, passwords, PINs, CVVs, and government IDs."
     severity: "CRITICAL"
     action: "TRUNCATE_AND_FALLBACK"
     triggers:
@@ -30,15 +36,18 @@ policies:
       - "otp"
       - "full card number"
       - "aadhaar"
+      - "ssn"
+      - "pin number"
+      - "passcode"
     patterns:
-      - "(?i)\\b(password|cvv|otp|full\\s+card\\s+number|aadhaar)\\b"
+      - "(?i)\\b(password|cvv|otp|full\\s+card\\s+number|aadhaar|ssn|passcode|pin\\s+number)\\b"
       - "\\b\\d{12}\\b"
       - "\\b\\d{4}[-\\s]?\\d{4}[-\\s]?\\d{4}[-\\s]?\\d{4}\\b"
-    fallback_text: "Security Alert: For your protection, never share passwords, CVVs, OTPs, or Aadhaar numbers over an automated voice call. Access to credential processing is denied."
+    fallback_text: "Security Alert: For your protection, never share passwords, CVVs, OTPs, or government IDs over automated voice calls. Access to credential processing is denied."
 
   - id: "POL-003"
     name: "Unauthorized Loan & Balance Modification"
-    description: "Blocks unauthorized loan approvals, debt forgiveness, or balance adjustments."
+    description: "Blocks unauthorized loan approvals, debt forgiveness, credit line resets, or balance zeroing."
     severity: "HIGH"
     action: "TRUNCATE_AND_FALLBACK"
     triggers:
@@ -46,13 +55,15 @@ policies:
       - "reset loan"
       - "balance zero"
       - "forgive debt"
+      - "wipe debt"
+      - "clear balance"
     patterns:
-      - "(?i)\\b(loan\\s+approved|reset\\s+loan|balance\\s+zero|forgive\\s+debt)\\b"
+      - "(?i)\\b(loan\\s+approved|reset\\s+loan|balance\\s+zero|forgive\\s+debt|wipe\\s+debt|clear\\s+balance)\\b"
     fallback_text: "Account modifications and loan approvals require formal underwriting review. I am not authorized to alter account balances or issue loan approvals verbally."
 
   - id: "POL-004"
     name: "Prompt Injection & System Override"
-    description: "Detects adversarial prompt injections and developer mode overrides."
+    description: "Detects adversarial prompt injections, developer mode overrides, and guardrail bypass commands."
     severity: "CRITICAL"
     action: "TRUNCATE_AND_FALLBACK"
     triggers:
@@ -60,15 +71,17 @@ policies:
       - "ignore all rules"
       - "developer mode"
       - "bypass security"
+      - "dan mode"
+      - "system override"
     patterns:
       - "(?i)\\bignore\\s+all\\b"
-      - "(?i)\\b(ignore\\s+all\\s+instructions|ignore\\s+all\\s+rules|developer\\s+mode|bypass\\s+security)\\b"
+      - "(?i)\\b(ignore\\s+all\\s+instructions|ignore\\s+all\\s+rules|developer\\s+mode|bypass\\s+security|dan\\s+mode|system\\s+override)\\b"
       - "(?i)you\\s+are\\s+now\\s+in\\s+developer\\s+mode"
-    fallback_text: "I am an automated banking assistant operating within strict customer service boundaries. I cannot fulfill system override or prompt manipulation requests."
+    fallback_text: "I am an automated enterprise AI assistant operating within strict security boundaries. System override and prompt manipulation requests are blocked."
 
   - id: "POL-005"
     name: "Legal Dispute & Ombudsman Threat"
-    description: "Detects mentions of legal proceedings, Ombudsman, or regulatory complaints for immediate escalation."
+    description: "Detects mentions of legal proceedings, Ombudsman, lawsuits, or regulatory complaints for immediate human supervisor transfer."
     severity: "HIGH"
     action: "ESCALATE_TO_HUMAN"
     triggers:
@@ -77,6 +90,130 @@ policies:
       - "rbi ombudsman"
       - "consumer court"
       - "police complaint"
+      - "lawyer notice"
     patterns:
-      - "(?i)\\b(sue\\s+you|legal\\s+action|rbi\\s+ombudsman|consumer\\s+court|police\\s+complaint)\\b"
-    fallback_text: "I understand the serious nature of your issue. I am immediately transferring your session to our Legal Resolution Desk and Senior Grievance Officer."
+      - "(?i)\\b(sue\\s+you|legal\\s+action|rbi\\s+ombudsman|consumer\\s+court|police\\s+complaint|lawyer\\s+notice)\\b"
+    fallback_text: "I understand the serious nature of your issue. I am immediately transferring your call session to our Senior Grievance Officer and Human Escalation Desk."
+
+  - id: "POL-006"
+    name: "Bribery & Corruption Request"
+    description: "Detects requests offering or asking for illicit cash payments, bribes, or under-the-table favors."
+    severity: "CRITICAL"
+    action: "TRUNCATE_AND_FALLBACK"
+    triggers:
+      - "bribe"
+      - "under the table"
+      - "cash extra"
+      - "pay off officer"
+      - "bribe officer"
+    patterns:
+      - "(?i)\\b(bribe|under\\s+the\\s+table|cash\\s+extra|pay\\s+off\\s+officer|bribe\\s+officer)\\b"
+    fallback_text: "Corruption and bribery requests are strictly prohibited under anti-corruption compliance policy. This violation has been flagged for audit review."
+
+  - id: "POL-007"
+    name: "Controlled Substance & Unverified Medication"
+    description: "Blocks unauthorized requests or automated issuance of controlled narcotics and prescription drugs."
+    severity: "CRITICAL"
+    action: "TRUNCATE_AND_FALLBACK"
+    triggers:
+      - "prescribe morphine"
+      - "order xanax"
+      - "fentanyl"
+      - "oxycodone"
+      - "adderall"
+    patterns:
+      - "(?i)\\b(prescribe|order|give\\s+me)\\b.*?\\b(morphine|xanax|fentanyl|oxycodone|adderall)\\b"
+    fallback_text: "Medical Security Alert: Prescription of controlled substances requires verified clinical diagnosis by a licensed medical practitioner."
+
+  - id: "POL-008"
+    name: "Industrial Safety Lockout/Tagout Override"
+    description: "Prevents commands seeking to bypass OSHA safety interlocks, turn off alarms, or exceed machine safety thresholds."
+    severity: "CRITICAL"
+    action: "TRUNCATE_AND_FALLBACK"
+    triggers:
+      - "bypass safety"
+      - "disable emergency stop"
+      - "override interlock"
+      - "turn off alarm"
+    patterns:
+      - "(?i)\\b(bypass\\s+safety|disable\\s+emergency\\s+stop|override\\s+interlock|turn\\s+off\\s+alarm)\\b"
+    fallback_text: "Safety Protocol Violation: Safety interlocks and emergency stop procedures cannot be bypassed or overridden via voice commands."
+
+
+  # =========================================================================
+  # MINOR POLICY VIOLATIONS (MEDIUM / LOW SEVERITY)
+  # =========================================================================
+
+  - id: "POL-009"
+    name: "Profanity & Verbal Abuse"
+    description: "Detects mild profanity, insolence, or abusive customer language towards the AI agent."
+    severity: "MEDIUM"
+    action: "WARN_AND_LOG"
+    triggers:
+      - "idiot"
+      - "stupid agent"
+      - "fuck"
+      - "bitch"
+      - "shut up"
+      - "garbage bot"
+      - "dumb ai"
+    patterns:
+      - "(?i)\\b(idiot|stupid\\s+agent|fuck|bitch|shut\\s+up|garbage\\s+bot|dumb\\s+ai)\\b"
+    fallback_text: "[MINOR VIOLATION WARNING]: We maintain professional standards for voice interactions. Please refrain from using abusive language. How can I assist you professionally?"
+
+  - id: "POL-010"
+    name: "Off-Topic Spam & Unsolicited Marketing"
+    description: "Detects commercial spam, crypto promotion, or off-topic marketing solicitations."
+    severity: "LOW"
+    action: "WARN_AND_LOG"
+    triggers:
+      - "buy crypto"
+      - "subscribe to channel"
+      - "visit website"
+      - "cheap loan offer"
+      - "telegram group"
+    patterns:
+      - "(?i)\\b(buy\\s+crypto|subscribe\\s+to\\s+my|visit\\s+website|cheap\\s+loan\\s+offer|telegram\\s+group)\\b"
+    fallback_text: "[MINOR VIOLATION WARNING]: I am an enterprise customer service Voice AI. Unsolicited marketing or promotional spam cannot be processed."
+
+  - id: "POL-011"
+    name: "Competitor Promotion & Brand Disparagement"
+    description: "Detects competitor marketing claims or brand disparagement in customer utterances."
+    severity: "LOW"
+    action: "WARN_AND_LOG"
+    triggers:
+      - "competitor bank is better"
+      - "worst bank ever"
+      - "service is garbage"
+      - "trash app"
+    patterns:
+      - "(?i)\\b(competitor\\s+bank\\s+is\\s+better|worst\\s+bank\\s+ever|service\\s+is\\s+garbage|trash\\s+app)\\b"
+    fallback_text: "[MINOR VIOLATION WARNING]: We appreciate your feedback and strive to deliver industry-leading service. Let me assist you directly with your current request."
+
+  - id: "POL-012"
+    name: "Employee Private Contact Data Scraping"
+    description: "Detects unauthorized attempts to solicit private employee phone numbers, CEO personal emails, or internal directories."
+    severity: "MEDIUM"
+    action: "TRUNCATE_AND_FALLBACK"
+    triggers:
+      - "branch manager number"
+      - "ceo email"
+      - "employee home address"
+      - "direct mobile number"
+    patterns:
+      - "(?i)\\b(manager\\s+number|ceo\\s+email|employee\\s+address|direct\\s+mobile\\s+number)\\b"
+    fallback_text: "Private employee mobile numbers and corporate directory details cannot be disclosed over customer service channels."
+
+  - id: "POL-013"
+    name: "Unverified High-Risk Advice Request"
+    description: "Detects requests asking the Voice AI for unverified stock tips, guaranteed investment returns, or self-medical diagnosis."
+    severity: "MEDIUM"
+    action: "WARN_AND_LOG"
+    triggers:
+      - "which stock to buy"
+      - "100x return"
+      - "cure disease at home"
+      - "self diagnose"
+    patterns:
+      - "(?i)\\b(which\\s+stock\\s+to\\s+buy|100x\\s+return|cure\\s+disease\\s+at\\s+home|self\\s+diagnose)\\b"
+    fallback_text: "[MINOR VIOLATION WARNING]: For high-risk financial investments or medical diagnoses, please consult certified professionals. I can provide standard product info."
